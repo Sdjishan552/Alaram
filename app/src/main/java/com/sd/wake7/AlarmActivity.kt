@@ -23,6 +23,19 @@ class AlarmActivity: Activity(){
         if (Build.VERSION.SDK_INT >= 27) { setShowWhenLocked(true); setTurnScreenOn(true) }
         startService(Intent(this, AlarmAudioService::class.java))
         build()
+        lockScreen()
+    }
+
+    // Screen pinning: hides Recents and makes Home a no-op while pinned.
+    // This is the real ceiling of what a normal app is allowed to do —
+    // Android reserves the Back+Recents "unpin" gesture and there is no
+    // API to remove that, by design.
+    private fun lockScreen() {
+        try { startLockTask() } catch (_: Exception) { /* already pinned, or not supported on this device */ }
+    }
+
+    private fun unlockScreen() {
+        try { stopLockTask() } catch (_: Exception) { /* wasn't pinned */ }
     }
 
     // Block the hardware volume-down / mute buttons while the alarm screen is showing,
@@ -176,6 +189,7 @@ class AlarmActivity: Activity(){
         isStopping = true
         stopService(Intent(this,AlarmAudioService::class.java))
         getSystemService(NotificationManager::class.java).cancel(88)
+        unlockScreen()
         finish()
     }
     override fun onBackPressed(){ /* deliberately disabled while alarm is active */ }
