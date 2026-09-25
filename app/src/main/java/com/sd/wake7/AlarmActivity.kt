@@ -15,6 +15,7 @@ class AlarmActivity: Activity(){
     private lateinit var inputs: LinearLayout
     private lateinit var stop: Button
     private lateinit var progress: TextView
+    private var isStopping = false
 
     override fun onCreate(savedInstanceState: Bundle?){
         super.onCreate(savedInstanceState)
@@ -22,6 +23,22 @@ class AlarmActivity: Activity(){
         if (Build.VERSION.SDK_INT >= 27) { setShowWhenLocked(true); setTurnScreenOn(true) }
         startService(Intent(this, AlarmAudioService::class.java))
         build()
+    }
+
+    // Block the hardware volume-down / mute buttons while the alarm screen is showing,
+    // so the alarm can't be silenced without actually solving the questions.
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_MUTE) {
+            return true
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_MUTE) {
+            return true
+        }
+        return super.onKeyUp(keyCode, event)
     }
 
     private fun build(){
@@ -49,7 +66,7 @@ class AlarmActivity: Activity(){
             gravity = Gravity.CENTER
         }, matchWrap(this))
         headerCard.addView(TextView(this).apply {
-            text = "Solve all 7 questions — the alarm will not stop before that"
+            text = "Solve all 7 questions — the alarm stops automatically once they're all correct"
             textSize = 14f
             setTextColor(Color.parseColor("#FFE0E0"))
             gravity = Gravity.CENTER
@@ -144,14 +161,23 @@ class AlarmActivity: Activity(){
         if (ok) {
             stop.isEnabled = true
             stop.alpha = 1f
-            stop.text = "STOP ALARM"
+            stop.text = "STOPPING…"
             Toast.makeText(this,"All 7 correct. Good morning!",Toast.LENGTH_SHORT).show()
+            // Auto-stop a moment after the last correct answer, so you see the
+            // confirmation before the screen closes. No extra tap required.
+            stop.postDelayed({ stopAlarm() }, 600)
         } else {
             Toast.makeText(this,"Not all answers are correct.",Toast.LENGTH_SHORT).show()
         }
     }
 
-    private fun stopAlarm(){ stopService(Intent(this,AlarmAudioService::class.java)); getSystemService(NotificationManager::class.java).cancel(88); finish() }
+    private fun stopAlarm(){
+        if (isStopping) return
+        isStopping = true
+        stopService(Intent(this,AlarmAudioService::class.java))
+        getSystemService(NotificationManager::class.java).cancel(88)
+        finish()
+    }
     override fun onBackPressed(){ /* deliberately disabled while alarm is active */ }
     override fun onUserLeaveHint(){ super.onUserLeaveHint() }
 }
