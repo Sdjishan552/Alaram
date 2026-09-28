@@ -188,7 +188,7 @@ class AlarmActivity: Activity(){
         if (isStopping) return
         isStopping = true
         stopService(Intent(this,AlarmAudioService::class.java))
-        getSystemService(NotificationManager::class.java).cancel(88)
+        getSystemService(NotificationManager::class.java).cancel(AlarmNotifications.NOTIFICATION_ID)
         unlockScreen()
         finish()
     }
