@@ -6,6 +6,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <application android:theme="@style/Theme.Wake7" android:label="Wake 7 Alarm" android:allowBackup="false" android:supportsRtl="true" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round">
         <activity android:name=".AlarmActivity" android:showWhenLocked="true" android:turnScreenOn="true" android:excludeFromRecents="true" android:exported="false" />
         <activity android:name=".MainActivity" android:exported="true">
@@ -13,7 +15,7 @@
         </activity>
         <receiver android:name=".AlarmReceiver" android:exported="false" />
         <receiver android:name=".BootReceiver" android:exported="true">
-            <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED"/><action android:name="android.intent.action.TIME_SET"/><action android:name="android.intent.action.TIMEZONE_CHANGED"/></intent-filter>
+            <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED"/><action android:name="android.intent.action.TIME_SET"/><action android:name="android.intent.action.TIMEZONE_CHANGED"/><action android:name="android.intent.action.MY_PACKAGE_REPLACED"/></intent-filter>
         </receiver>
         <service android:name=".AlarmAudioService" android:exported="false" android:foregroundServiceType="mediaPlayback" />
     </application>
