@@ -20,7 +20,29 @@ class MainActivity : Activity() {
     private var toneUri: Uri? = null
     private val pickTone = 1001
 
-    override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); buildUi() }
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        buildUi()
+        // Make sure the daily alarm exists as soon as the app is opened (fixes "never set" case).
+        if (!AlarmScheduler.schedule(this)) requestExactAlarmAccess()
+    }
+
+    private fun requestExactAlarmAccess() {
+        if (android.os.Build.VERSION.SDK_INT >= 31) {
+            try { startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:$packageName"))) } catch (_: Exception) {}
+        }
+    }
+
+    // Lets the alarm fire reliably when the app is closed / phone is idle.
+    private fun requestBatteryUnrestricted() {
+        val pm = getSystemService(android.os.PowerManager::class.java)
+        if (pm.isIgnoringBatteryOptimizations(packageName)) { toast("Battery restriction already removed"); return }
+        try {
+            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+        } catch (_: Exception) {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+        }
+    }
 
     private fun buildUi() {
         val bg = Color.parseColor(Palette.BACKGROUND)
@@ -66,14 +88,19 @@ class MainActivity : Activity() {
 
         // ---- Primary actions ----
         val setTime = buildPrimaryButton(this, "SET 7:00 AM DAILY").apply {
-            setOnClickListener { AlarmScheduler.schedule(this@MainActivity); toast("Daily 7:00 AM alarm set") }
+            setOnClickListener { if (AlarmScheduler.schedule(this@MainActivity)) toast("Daily 7:00 AM alarm set") else requestExactAlarmAccess() }
         }
         root.addView(setTime, matchHeight(this, 56, bottomDp = 14))
 
         val test = buildPrimaryButton(this, "TEST ALARM NOW").apply {
             setOnClickListener { startActivity(Intent(this@MainActivity, AlarmActivity::class.java)) }
         }
-        root.addView(test, matchHeight(this, 56, bottomDp = 24))
+        root.addView(test, matchHeight(this, 56, bottomDp = 14))
+
+        val battery = buildSecondaryButton(this, "ALLOW BACKGROUND RUNNING (IMPORTANT)").apply {
+            setOnClickListener { requestBatteryUnrestricted() }
+        }
+        root.addView(battery, matchHeight(this, 50, bottomDp = 24))
 
         // ---- Tone card ----
         val toneCard = buildCard(this, 20).apply {
@@ -139,11 +166,25 @@ class MainActivity : Activity() {
 }
 
 object AlarmScheduler {
-    fun schedule(context:Context){
-        val am=context.getSystemService(AlarmManager::class.java)
-        val i=Intent(context,AlarmReceiver::class.java)
-        val pi=PendingIntent.getBroadcast(context,77,i,PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val c=Calendar.getInstance().apply { set(Calendar.HOUR_OF_DAY,7); set(Calendar.MINUTE,0); set(Calendar.SECOND,0); set(Calendar.MILLISECOND,0); if(timeInMillis<=System.currentTimeMillis()) add(Calendar.DAY_OF_YEAR,1) }
-        am.setAlarmClock(AlarmManager.AlarmClockInfo(c.timeInMillis,pi),pi)
+    /** Returns false if Android refuses exact alarms (permission revoked on Android 12/12L). */
+    fun schedule(context: Context): Boolean {
+        val am = context.getSystemService(AlarmManager::class.java)
+        if (android.os.Build.VERSION.SDK_INT >= 31 && !am.canScheduleExactAlarms()) return false
+
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        // The alarm itself: fires AlarmReceiver.
+        val fire = PendingIntent.getBroadcast(context, 77, Intent(context, AlarmReceiver::class.java), flags)
+        // What opens when the user taps the alarm icon in the status bar / clock UI.
+        // It must NOT be the receiver, otherwise tapping the icon would trigger the alarm.
+        val show = PendingIntent.getActivity(context, 76, Intent(context, MainActivity::class.java), flags)
+
+        val c = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 7); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+            if (timeInMillis <= System.currentTimeMillis()) add(Calendar.DAY_OF_YEAR, 1)
+        }
+        return try {
+            am.setAlarmClock(AlarmManager.AlarmClockInfo(c.timeInMillis, show), fire)
+            true
+        } catch (_: SecurityException) { false }
     }
 }
