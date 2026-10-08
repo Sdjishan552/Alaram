@@ -8,6 +8,7 @@ import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
+import android.text.format.DateFormat
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.*
@@ -16,6 +17,8 @@ import java.util.*
 class MainActivity : Activity() {
     private val prefs by lazy { getSharedPreferences("wake7", MODE_PRIVATE) }
     private lateinit var timeText: TextView
+    private lateinit var nextText: TextView
+    private lateinit var listBox: LinearLayout
     private lateinit var toneText: TextView
     private var toneUri: Uri? = null
     private val pickTone = 1001
@@ -23,8 +26,15 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         buildUi()
-        // Make sure the daily alarm exists as soon as the app is opened (fixes "never set" case).
+        // Re-register all saved alarms whenever the app is opened.
         if (!AlarmScheduler.schedule(this)) requestExactAlarmAccess()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Coming back from the exact-alarm settings screen: try again silently.
+        AlarmScheduler.schedule(this)
+        refreshList()
     }
 
     private fun requestExactAlarmAccess() {
@@ -45,10 +55,10 @@ class MainActivity : Activity() {
     }
 
     private fun buildUi() {
-        val bg = Color.parseColor(Palette.BACKGROUND)
         val textPrimary = Color.parseColor(Palette.TEXT_PRIMARY)
         val textSecondary = Color.parseColor(Palette.TEXT_SECONDARY)
         val accent = Color.parseColor(Palette.ACCENT)
+        val bg = Color.parseColor(Palette.BACKGROUND)
 
         val scroll = ScrollView(this).apply { setBackgroundColor(bg) }
         val root = LinearLayout(this).apply {
@@ -66,7 +76,7 @@ class MainActivity : Activity() {
         }, matchWrap(this))
 
         root.addView(TextView(this).apply {
-            text = "7:00 AM  ·  Solve 7 questions to stop"
+            text = "Solve 7 questions to stop any alarm"
             textSize = 14f
             gravity = Gravity.CENTER
             setTextColor(textSecondary)
@@ -84,14 +94,32 @@ class MainActivity : Activity() {
             setTextColor(textPrimary)
         }
         clockCard.addView(timeText, matchWrap(this))
+        nextText = TextView(this).apply {
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setTextColor(textSecondary)
+        }
+        clockCard.addView(nextText, matchWrap(this, topDp = 6))
         root.addView(clockCard, matchWrap(this, bottomDp = 28))
 
-        // ---- Primary actions ----
-        val setTime = buildPrimaryButton(this, "SET 7:00 AM DAILY").apply {
-            setOnClickListener { if (AlarmScheduler.schedule(this@MainActivity)) toast("Daily 7:00 AM alarm set") else requestExactAlarmAccess() }
+        // ---- Add alarm ----
+        val add = buildPrimaryButton(this, "+ ADD ALARM").apply {
+            setOnClickListener { showTimePicker(null) }
         }
-        root.addView(setTime, matchHeight(this, 56, bottomDp = 14))
+        root.addView(add, matchHeight(this, 56, bottomDp = 20))
 
+        // ---- Saved alarms ----
+        root.addView(TextView(this).apply {
+            text = "MY ALARMS"
+            textSize = 12f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(textSecondary)
+            letterSpacing = 0.08f
+        }, matchWrap(this, bottomDp = 8))
+        listBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(listBox, matchWrap(this, bottomDp = 14))
+
+        // ---- Other actions ----
         val test = buildPrimaryButton(this, "TEST ALARM NOW").apply {
             setOnClickListener { startActivity(Intent(this@MainActivity, AlarmActivity::class.java)) }
         }
@@ -137,11 +165,13 @@ class MainActivity : Activity() {
             letterSpacing = 0.08f
         }, matchWrap(this, bottomDp = 8))
         infoCard.addView(TextView(this).apply {
-            text = "• Keep Alarm volume audible.\n" +
+            text = "• Tap ADD ALARM to save as many alarm times as you want. Each one repeats daily.\n" +
+                "• Tap a saved time to change it. Use the switch to turn it on/off.\n" +
+                "• Keep Alarm volume audible.\n" +
                 "• Allow notifications and full-screen alerts.\n" +
                 "• On some phones, disable battery optimization / autostart restrictions for this app.\n" +
                 "• You can use any audio file your phone exposes in the picker.\n\n" +
-                "The alarm cannot be dismissed from its screen until all 7 questions are answered. Android itself can still force-stop or uninstall any app."
+                "An alarm cannot be dismissed from its screen until all 7 questions are answered. Android itself can still force-stop or uninstall any app."
             textSize = 13f
             setTextColor(textPrimary)
             setLineSpacing(6f, 1f)
@@ -150,7 +180,7 @@ class MainActivity : Activity() {
 
         scroll.addView(root, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         setContentView(scroll)
-        updateClock(); loadTone()
+        refreshList(); updateClock(); loadTone()
 
         if (android.os.Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 7)
         if (android.os.Build.VERSION.SDK_INT >= 34 && !getSystemService(NotificationManager::class.java).canUseFullScreenIntent()) {
@@ -158,33 +188,121 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun updateClock(){ timeText.text=String.format("%02d:%02d",Calendar.getInstance().get(Calendar.HOUR_OF_DAY),Calendar.getInstance().get(Calendar.MINUTE)); timeText.postDelayed({updateClock()},30000) }
+    // ------------------------------------------------------------------ alarms list
+
+    private fun showTimePicker(existing: Alarm?) {
+        val now = Calendar.getInstance()
+        val h = existing?.hour ?: now.get(Calendar.HOUR_OF_DAY)
+        val m = existing?.minute ?: now.get(Calendar.MINUTE)
+        TimePickerDialog(this, { _, hh, mm -> onTimeChosen(existing, hh, mm) }, h, m, DateFormat.is24HourFormat(this)).show()
+    }
+
+    private fun onTimeChosen(existing: Alarm?, hour: Int, minute: Int) {
+        val label = AlarmStore.format(hour, minute)
+        if (existing == null) {
+            if (AlarmStore.add(this, hour, minute) == null) { toast("$label is already saved"); return }
+            toast("Alarm saved: $label")
+        } else {
+            if (!AlarmStore.update(this, existing.id, hour, minute)) { toast("$label is already saved"); return }
+            toast("Alarm changed to $label")
+        }
+        afterChange()
+    }
+
+    private fun afterChange() {
+        if (!AlarmScheduler.schedule(this)) requestExactAlarmAccess()
+        refreshList()
+    }
+
+    private fun confirmDelete(a: Alarm) {
+        AlertDialog.Builder(this)
+            .setMessage("Delete the ${AlarmStore.format(a.hour, a.minute)} alarm?")
+            .setPositiveButton("Delete") { _, _ ->
+                AlarmStore.delete(this, a.id)
+                AlarmScheduler.cancel(this, a.id)
+                toast("Alarm deleted")
+                afterChange()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun refreshList() {
+        if (!::listBox.isInitialized) return
+        val textPrimary = Color.parseColor(Palette.TEXT_PRIMARY)
+        val textSecondary = Color.parseColor(Palette.TEXT_SECONDARY)
+        listBox.removeAllViews()
+        val alarms = AlarmStore.all(this)
+
+        if (alarms.isEmpty()) {
+            listBox.addView(TextView(this).apply {
+                text = "No alarms saved yet.\nTap + ADD ALARM to save one."
+                textSize = 14f
+                gravity = Gravity.CENTER
+                setTextColor(textSecondary)
+                setPadding(0, 12.dp(this@MainActivity), 0, 12.dp(this@MainActivity))
+            }, matchWrap(this))
+        }
+
+        alarms.forEach { a ->
+            val row = buildCard(this, 18).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(18.dp(this@MainActivity), 12.dp(this@MainActivity), 14.dp(this@MainActivity), 12.dp(this@MainActivity))
+            }
+            row.addView(TextView(this).apply {
+                text = AlarmStore.format(a.hour, a.minute)
+                textSize = 26f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(if (a.enabled) textPrimary else textSecondary)
+                setOnClickListener { showTimePicker(a) }
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+
+            val sw = Switch(this).apply {
+                isChecked = a.enabled
+                setOnCheckedChangeListener { _, on ->
+                    AlarmStore.setEnabled(this@MainActivity, a.id, on)
+                    toast(if (on) "Alarm on" else "Alarm off")
+                    afterChange()
+                }
+            }
+            row.addView(sw, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                rightMargin = 12.dp(this@MainActivity)
+            })
+
+            val del = buildSecondaryButton(this, "Delete").apply {
+                minWidth = 0
+                minHeight = 0
+                setPadding(14.dp(this@MainActivity), 0, 14.dp(this@MainActivity), 0)
+                setOnClickListener { confirmDelete(a) }
+            }
+            row.addView(del, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, 40.dp(this)))
+
+            listBox.addView(row, matchWrap(this, bottomDp = 10))
+        }
+        updateNextText()
+    }
+
+    private fun updateNextText() {
+        if (!::nextText.isInitialized) return
+        val next = AlarmStore.all(this).filter { it.enabled }.minByOrNull { AlarmScheduler.nextTrigger(it) }
+        if (next == null) { nextText.text = "No alarm is on"; return }
+        val mins = ((AlarmScheduler.nextTrigger(next) - System.currentTimeMillis()) / 60000).coerceAtLeast(0)
+        val h = mins / 60
+        val m = mins % 60
+        nextText.text = "Next alarm: ${AlarmStore.format(next.hour, next.minute)}  ·  in ${if (h > 0) "$h h " else ""}$m min"
+    }
+
+    // ------------------------------------------------------------------ clock + tone
+
+    private fun updateClock() {
+        val c = Calendar.getInstance()
+        timeText.text = String.format("%02d:%02d", c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE))
+        updateNextText()
+        timeText.postDelayed({ updateClock() }, 30000)
+    }
     private fun pickTone(){ startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { type="audio/*"; addCategory(Intent.CATEGORY_OPENABLE); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION) }, pickTone) }
     override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?){ super.onActivityResult(requestCode,resultCode,data); if(requestCode==pickTone && resultCode==RESULT_OK){ data?.data?.let { uri -> try{contentResolver.takePersistableUriPermission(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION)}catch(_:Exception){}; prefs.edit().putString("tone",uri.toString()).apply(); loadTone() } } }
     private fun loadTone(){ toneUri=prefs.getString("tone",null)?.let(Uri::parse); toneText.text = toneUri?.lastPathSegment ?: "System default alarm" }
     private fun toast(s:String){ Toast.makeText(this,s,Toast.LENGTH_SHORT).show() }
-}
-
-object AlarmScheduler {
-    /** Returns false if Android refuses exact alarms (permission revoked on Android 12/12L). */
-    fun schedule(context: Context): Boolean {
-        val am = context.getSystemService(AlarmManager::class.java)
-        if (android.os.Build.VERSION.SDK_INT >= 31 && !am.canScheduleExactAlarms()) return false
-
-        val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        // The alarm itself: fires AlarmReceiver.
-        val fire = PendingIntent.getBroadcast(context, 77, Intent(context, AlarmReceiver::class.java), flags)
-        // What opens when the user taps the alarm icon in the status bar / clock UI.
-        // It must NOT be the receiver, otherwise tapping the icon would trigger the alarm.
-        val show = PendingIntent.getActivity(context, 76, Intent(context, MainActivity::class.java), flags)
-
-        val c = Calendar.getInstance().apply {
-            set(Calendar.HOUR_OF_DAY, 7); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
-            if (timeInMillis <= System.currentTimeMillis()) add(Calendar.DAY_OF_YEAR, 1)
-        }
-        return try {
-            am.setAlarmClock(AlarmManager.AlarmClockInfo(c.timeInMillis, show), fire)
-            true
-        } catch (_: SecurityException) { false }
-    }
 }
