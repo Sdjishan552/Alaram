@@ -20,8 +20,18 @@ class AlarmActivity: Activity(){
     override fun onCreate(savedInstanceState: Bundle?){
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        if (Build.VERSION.SDK_INT >= 27) { setShowWhenLocked(true); setTurnScreenOn(true) }
-        startService(Intent(this, AlarmAudioService::class.java))
+        if (Build.VERSION.SDK_INT >= 27) {
+            setShowWhenLocked(true); setTurnScreenOn(true)
+        } else {
+            window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON)
+        }
+        // Must be startForegroundService: the service promotes itself to foreground in onCreate.
+        // (Plain startService can crash when this screen is opened from the backup notification.)
+        try {
+            startForegroundService(Intent(this, AlarmAudioService::class.java))
+        } catch (_: Exception) {
+            try { startService(Intent(this, AlarmAudioService::class.java)) } catch (_: Exception) {}
+        }
         build()
         lockScreen()
     }
