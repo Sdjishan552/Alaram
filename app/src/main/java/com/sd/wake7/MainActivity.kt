@@ -54,6 +54,33 @@ class MainActivity : Activity() {
         }
     }
 
+    // Many phones (Xiaomi, Realme, Oppo, Vivo, Samsung, ...) block alarms of apps that are not
+    // allowed to "auto-start" / run in the background. Open the vendor screen if we know it,
+    // otherwise the standard App info page.
+    private fun openAutostartSettings() {
+        val screens = listOf(
+            "com.miui.securitycenter" to "com.miui.permcenter.autostart.AutoStartManagementActivity",
+            "com.coloros.safecenter" to "com.coloros.safecenter.permission.startup.StartupAppListActivity",
+            "com.oppo.safe" to "com.oppo.safe.permission.startup.StartupAppListActivity",
+            "com.coloros.safecenter" to "com.coloros.safecenter.startupapp.StartupAppListActivity",
+            "com.vivo.permissionmanager" to "com.vivo.permissionmanager.activity.BgStartUpManagerActivity",
+            "com.iqoo.secure" to "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity",
+            "com.huawei.systemmanager" to "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
+            "com.asus.mobilemanager" to "com.asus.mobilemanager.autostart.AutoStartActivity",
+            "com.samsung.android.lool" to "com.samsung.android.sm.ui.battery.BatteryActivity"
+        )
+        toast("Turn ON Auto-start / Allow background activity, and set Battery to No restrictions")
+        for ((pkg, cls) in screens) {
+            try {
+                startActivity(Intent().setComponent(ComponentName(pkg, cls)))
+                return
+            } catch (_: Exception) { /* not this brand, try the next */ }
+        }
+        try {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+        } catch (_: Exception) {}
+    }
+
     private fun buildUi() {
         val textPrimary = Color.parseColor(Palette.TEXT_PRIMARY)
         val textSecondary = Color.parseColor(Palette.TEXT_SECONDARY)
@@ -128,7 +155,12 @@ class MainActivity : Activity() {
         val battery = buildSecondaryButton(this, "ALLOW BACKGROUND RUNNING (IMPORTANT)").apply {
             setOnClickListener { requestBatteryUnrestricted() }
         }
-        root.addView(battery, matchHeight(this, 50, bottomDp = 24))
+        root.addView(battery, matchHeight(this, 50, bottomDp = 10))
+
+        val autostart = buildSecondaryButton(this, "ALLOW AUTO-START (IMPORTANT)").apply {
+            setOnClickListener { openAutostartSettings() }
+        }
+        root.addView(autostart, matchHeight(this, 50, bottomDp = 24))
 
         // ---- Tone card ----
         val toneCard = buildCard(this, 20).apply {
@@ -170,7 +202,9 @@ class MainActivity : Activity() {
                 "• Keep Alarm volume audible.\n" +
                 "• Allow notifications and full-screen alerts.\n" +
                 "• On some phones, disable battery optimization / autostart restrictions for this app.\n" +
-                "• You can use any audio file your phone exposes in the picker.\n\n" +
+                "• Custom tones are copied onto the phone, so they play with NO internet.\n" +
+                "• Alarms work fully offline and repeat every day until you switch them off.\n" +
+                "• Tap both IMPORTANT buttons (background running + auto-start) once; many phones block alarms otherwise.\n\n" +
                 "An alarm cannot be dismissed from its screen until all 7 questions are answered. Android itself can still force-stop or uninstall any app."
             textSize = 13f
             setTextColor(textPrimary)
@@ -301,8 +335,45 @@ class MainActivity : Activity() {
         updateNextText()
         timeText.postDelayed({ updateClock() }, 30000)
     }
-    private fun pickTone(){ startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { type="audio/*"; addCategory(Intent.CATEGORY_OPENABLE); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION) }, pickTone) }
-    override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?){ super.onActivityResult(requestCode,resultCode,data); if(requestCode==pickTone && resultCode==RESULT_OK){ data?.data?.let { uri -> try{contentResolver.takePersistableUriPermission(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION)}catch(_:Exception){}; prefs.edit().putString("tone",uri.toString()).apply(); loadTone() } } }
-    private fun loadTone(){ toneUri=prefs.getString("tone",null)?.let(Uri::parse); toneText.text = toneUri?.lastPathSegment ?: "System default alarm" }
-    private fun toast(s:String){ Toast.makeText(this,s,Toast.LENGTH_SHORT).show() }
+    private fun pickTone() {
+        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            type = "audio/*"
+            addCategory(Intent.CATEGORY_OPENABLE)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        }, pickTone)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == pickTone && resultCode == RESULT_OK) {
+            val uri = data?.data ?: return
+            try { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Exception) {}
+            toast("Saving tone on this phone…")
+            // Copy the file into the app's private storage so the alarm never needs the original
+            // file, a cloud provider, or an internet connection.
+            Thread {
+                val ok = ToneStore.importFrom(this, uri)
+                val name = ToneStore.displayName(this, uri)
+                runOnUiThread {
+                    if (ok) {
+                        prefs.edit().putString("tone_name", name).remove("tone").apply()
+                        toast("Tone saved — it will play offline")
+                    } else {
+                        toast("Could not read that file. Pick an audio file stored on this phone.")
+                    }
+                    loadTone()
+                }
+            }.start()
+        }
+    }
+
+    private fun loadTone() {
+        toneText.text = when {
+            ToneStore.hasCustom(this) -> prefs.getString("tone_name", null) ?: "Custom tone (saved on phone)"
+            prefs.getString("tone", null) != null -> "Old custom tone - choose it again once to make it work offline"
+            else -> "System default alarm"
+        }
+    }
+
+    private fun toast(s: String) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show() }
 }
