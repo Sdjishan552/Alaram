@@ -25,13 +25,9 @@ class AlarmActivity: Activity(){
         } else {
             window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON)
         }
-        // Must be startForegroundService: the service promotes itself to foreground in onCreate.
-        // (Plain startService can crash when this screen is opened from the backup notification.)
-        try {
-            startForegroundService(Intent(this, AlarmAudioService::class.java))
-        } catch (_: Exception) {
-            try { startService(Intent(this, AlarmAudioService::class.java)) } catch (_: Exception) {}
-        }
+        // Make sure the alarm is ringing: marks it as "ringing", arms the watchdog, starts the
+        // audio service (with a self-ringing notification as backup if the service is refused).
+        try { AlarmRinger.ring(this) } catch (_: Throwable) {}
         build()
         lockScreen()
     }
@@ -197,6 +193,10 @@ class AlarmActivity: Activity(){
     private fun stopAlarm(){
         if (isStopping) return
         isStopping = true
+        // Order matters: first say "no longer ringing" and cancel the watchdog,
+        // otherwise the watchdog could restart the sound right after we stop it.
+        RingState.clear(this)
+        AlarmScheduler.cancelWatchdog(this)
         stopService(Intent(this,AlarmAudioService::class.java))
         getSystemService(NotificationManager::class.java).cancel(AlarmNotifications.NOTIFICATION_ID)
         unlockScreen()
