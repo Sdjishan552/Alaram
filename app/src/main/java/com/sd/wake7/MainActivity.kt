@@ -20,6 +20,7 @@ class MainActivity : Activity() {
     private lateinit var nextText: TextView
     private lateinit var listBox: LinearLayout
     private lateinit var toneText: TextView
+    private lateinit var healthText: TextView
     private var toneUri: Uri? = null
     private val pickTone = 1001
 
@@ -28,13 +29,31 @@ class MainActivity : Activity() {
         buildUi()
         // Re-register all saved alarms whenever the app is opened.
         if (!AlarmScheduler.schedule(this)) requestExactAlarmAccess()
+        AlarmGuardService.ensure(this)
     }
 
     override fun onResume() {
         super.onResume()
         // Coming back from the exact-alarm settings screen: try again silently.
         AlarmScheduler.schedule(this)
+        AlarmGuardService.ensure(this)
+
+        // An alarm is still ringing (e.g. the alarm screen was dismissed some other way):
+        // show the questions again so it can actually be stopped.
+        if (RingState.isRinging(this)) {
+            startActivity(Intent(this, AlarmActivity::class.java))
+            return
+        }
+        // An alarm time passed in the last 30 min and the phone never rang it: ring it now.
+        val missed = AlarmScheduler.findMissed(this)
+        if (missed >= 0) {
+            AlarmHandled.mark(this, missed)
+            Diag.note(this, "received", "alarm #$missed was missed - ringing late (app opened)")
+            startActivity(Intent(this, AlarmActivity::class.java))
+            return
+        }
         refreshList()
+        refreshHealth()
     }
 
     private fun requestExactAlarmAccess() {
@@ -67,7 +86,9 @@ class MainActivity : Activity() {
             "com.iqoo.secure" to "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity",
             "com.huawei.systemmanager" to "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
             "com.asus.mobilemanager" to "com.asus.mobilemanager.autostart.AutoStartActivity",
-            "com.samsung.android.lool" to "com.samsung.android.sm.ui.battery.BatteryActivity"
+            "com.samsung.android.lool" to "com.samsung.android.sm.ui.battery.BatteryActivity",
+            "com.oneplus.security" to "com.oneplus.security.chainlaunch.view.ChainLaunchAppListActivity",
+            "com.transsion.phonemaster" to "com.cyin.himgr.autostart.AutoStartActivity"
         )
         toast("Turn ON Auto-start / Allow background activity, and set Battery to No restrictions")
         for ((pkg, cls) in screens) {
@@ -150,7 +171,20 @@ class MainActivity : Activity() {
         val test = buildPrimaryButton(this, "TEST ALARM NOW").apply {
             setOnClickListener { startActivity(Intent(this@MainActivity, AlarmActivity::class.java)) }
         }
-        root.addView(test, matchHeight(this, 56, bottomDp = 14))
+        root.addView(test, matchHeight(this, 56, bottomDp = 10))
+
+        // Goes through the SAME path as the real morning alarm. Tap it, LOCK the phone, wait 20 s.
+        val realTest = buildSecondaryButton(this, "TEST REAL ALARM IN 20 SEC (LOCK PHONE)").apply {
+            setOnClickListener {
+                try {
+                    AlarmScheduler.scheduleTest(this@MainActivity, 20)
+                    toast("Real test alarm set. Lock the phone now and wait 20 seconds.")
+                } catch (_: Exception) {
+                    toast("Could not schedule the test alarm")
+                }
+            }
+        }
+        root.addView(realTest, matchHeight(this, 50, bottomDp = 14))
 
         val battery = buildSecondaryButton(this, "ALLOW BACKGROUND RUNNING (IMPORTANT)").apply {
             setOnClickListener { requestBatteryUnrestricted() }
@@ -161,6 +195,25 @@ class MainActivity : Activity() {
             setOnClickListener { openAutostartSettings() }
         }
         root.addView(autostart, matchHeight(this, 50, bottomDp = 24))
+
+        // ---- Health check card ----
+        val healthCard = buildCard(this, 20).apply {
+            setPadding(20.dp(this@MainActivity), 20.dp(this@MainActivity), 20.dp(this@MainActivity), 20.dp(this@MainActivity))
+        }
+        healthCard.addView(TextView(this).apply {
+            text = "ALARM HEALTH CHECK"
+            textSize = 12f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(textSecondary)
+            letterSpacing = 0.08f
+        }, matchWrap(this, bottomDp = 8))
+        healthText = TextView(this).apply {
+            textSize = 13f
+            setTextColor(textPrimary)
+            setLineSpacing(6f, 1f)
+        }
+        healthCard.addView(healthText, matchWrap(this))
+        root.addView(healthCard, matchWrap(this, bottomDp = 24))
 
         // ---- Tone card ----
         val toneCard = buildCard(this, 20).apply {
@@ -204,7 +257,10 @@ class MainActivity : Activity() {
                 "• On some phones, disable battery optimization / autostart restrictions for this app.\n" +
                 "• Custom tones are copied onto the phone, so they play with NO internet.\n" +
                 "• Alarms work fully offline and repeat every day until you switch them off.\n" +
-                "• Tap both IMPORTANT buttons (background running + auto-start) once; many phones block alarms otherwise.\n\n" +
+                "• Tap both IMPORTANT buttons (background running + auto-start) once; many phones block alarms otherwise.\n" +
+                "• Do NOT swipe this app away from Recents at night. Xiaomi/Redmi/POCO: lock the app in Recents (long-press its card, tap the lock). Samsung: Battery > Never sleeping apps.\n" +
+                "• While an alarm is on, a small \"Wake 7 is armed\" notification stays visible. That is what keeps the alarm alive overnight.\n" +
+                "• Use TEST REAL ALARM IN 20 SEC once, with the phone locked, to prove it works.\n\n" +
                 "An alarm cannot be dismissed from its screen until all 7 questions are answered. Android itself can still force-stop or uninstall any app."
             textSize = 13f
             setTextColor(textPrimary)
@@ -214,7 +270,7 @@ class MainActivity : Activity() {
 
         scroll.addView(root, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         setContentView(scroll)
-        refreshList(); updateClock(); loadTone()
+        refreshList(); updateClock(); loadTone(); refreshHealth()
 
         if (android.os.Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 7)
         if (android.os.Build.VERSION.SDK_INT >= 34 && !getSystemService(NotificationManager::class.java).canUseFullScreenIntent()) {
@@ -317,6 +373,30 @@ class MainActivity : Activity() {
         updateNextText()
     }
 
+    private fun refreshHealth() {
+        if (!::healthText.isInitialized) return
+        val sb = StringBuilder()
+        fun line(ok: Boolean, text: String) { sb.append(if (ok) "✔  " else "✘  ").append(text).append('\n') }
+        try {
+            val nm = getSystemService(NotificationManager::class.java)
+            line(nm.areNotificationsEnabled(), "Notifications allowed")
+            val pm = getSystemService(android.os.PowerManager::class.java)
+            line(pm.isIgnoringBatteryOptimizations(packageName), "Battery: no restrictions")
+            if (android.os.Build.VERSION.SDK_INT >= 31) {
+                line(getSystemService(AlarmManager::class.java).canScheduleExactAlarms(), "Exact alarms allowed")
+            }
+            if (android.os.Build.VERSION.SDK_INT >= 34) {
+                line(nm.canUseFullScreenIntent(), "Full-screen alarm screen allowed")
+            }
+        } catch (_: Exception) {}
+        sb.append('\n')
+        sb.append("Next alarm armed:\n").append(Diag.get(this, "scheduled")).append("\n\n")
+        sb.append("Last alarm received by phone:\n").append(Diag.get(this, "received")).append("\n\n")
+        sb.append("Last sound start:\n").append(Diag.get(this, "service")).append("\n\n")
+        sb.append("Last problem:\n").append(Diag.get(this, "error"))
+        healthText.text = sb.toString()
+    }
+
     private fun updateNextText() {
         if (!::nextText.isInitialized) return
         val next = AlarmStore.all(this).filter { it.enabled }.minByOrNull { AlarmScheduler.nextTrigger(it) }
@@ -333,6 +413,7 @@ class MainActivity : Activity() {
         val c = Calendar.getInstance()
         timeText.text = String.format("%02d:%02d", c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE))
         updateNextText()
+        refreshHealth()
         timeText.postDelayed({ updateClock() }, 30000)
     }
     private fun pickTone() {
