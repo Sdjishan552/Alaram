@@ -5,25 +5,95 @@ import android.content.*
 import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.os.Build
+import android.os.PowerManager
 
 class AlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        // 1. Schedule tomorrow's alarm FIRST, so nothing below can ever break the daily chain.
-        //    Wrapped in try/catch so a scheduling problem can never stop the alarm from ringing.
-        val firedId = intent.getIntExtra(AlarmScheduler.EXTRA_ALARM_ID, -1)
-        try { AlarmScheduler.schedule(context, firedId) } catch (_: Exception) {}
-
-        // 2. Start the sound immediately from here. It does not depend on the
-        //    full-screen activity being allowed to open. Alarms set with setAlarmClock()
-        //    are exempt from the "no foreground service from background" rule.
+        // Keep the CPU awake while the ringing is being started.
+        AlarmRinger.holdCpu(context)
         try {
-            val svc = Intent(context, AlarmAudioService::class.java)
-            if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(svc) else context.startService(svc)
-        } catch (e: Exception) {
-            // 3. Fallback: a notification that makes its OWN alarm sound (repeating until dismissed)
-            //    and opens AlarmActivity, which starts the audio service as soon as it can.
-            try { AlarmNotifications.postFallback(context) } catch (_: Exception) {}
+            when (intent.action) {
+                AlarmScheduler.ACTION_WATCHDOG -> onWatchdog(context)
+                AlarmScheduler.ACTION_HEARTBEAT -> onHeartbeat(context)
+                else -> onAlarm(context, intent)
+            }
+        } catch (t: Throwable) {
+            Diag.note(context, "error", "receiver: ${t.javaClass.simpleName}")
+            // Last resort: whatever went wrong, still try to make noise.
+            if (intent.action == null) { try { AlarmRinger.ring(context) } catch (_: Throwable) {} }
         }
+    }
+
+    /** The real alarm time (or the test alarm) has arrived. */
+    private fun onAlarm(context: Context, intent: Intent) {
+        val firedId = intent.getIntExtra(AlarmScheduler.EXTRA_ALARM_ID, -1)
+        Diag.note(context, "received", if (firedId == AlarmScheduler.TEST_ALARM_ID) "TEST alarm arrived" else "alarm #$firedId arrived")
+        if (firedId >= 0) AlarmHandled.mark(context, firedId)
+
+        // Schedule tomorrow's alarm, but never let a problem here stop the ringing.
+        try { AlarmScheduler.schedule(context, firedId) } catch (_: Throwable) {}
+
+        AlarmRinger.ring(context)
+    }
+
+    /** Ringing but not solved yet: make sure sound is really playing; restart it if not. */
+    private fun onWatchdog(context: Context) {
+        if (!RingState.isRinging(context)) return
+        AlarmRinger.ring(context)
+    }
+
+    /** Runs every few minutes all night: heal alarms, keep the guard alive, ring lost alarms. */
+    private fun onHeartbeat(context: Context) {
+        try { AlarmScheduler.schedule(context) } catch (_: Throwable) {}
+        AlarmGuardService.ensure(context)
+
+        val missed = AlarmScheduler.findMissed(context)
+        if (missed >= 0) {
+            AlarmHandled.mark(context, missed)
+            Diag.note(context, "received", "alarm #$missed was LOST by the phone - ringing late")
+            AlarmRinger.ring(context)
+        }
+    }
+}
+
+/** One place that starts the ringing, with several layers of fallback. */
+object AlarmRinger {
+    private var cpuLock: PowerManager.WakeLock? = null
+
+    @Synchronized
+    fun holdCpu(context: Context) {
+        try {
+            val l = cpuLock ?: context.applicationContext
+                .getSystemService(PowerManager::class.java)
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "wake7:receiver")
+                .also { it.setReferenceCounted(false); cpuLock = it }
+            l.acquire(60_000L)
+        } catch (_: Throwable) {}
+    }
+
+    /**
+     * Start (or re-assert) the alarm. Safe to call repeatedly.
+     *  1. mark the alarm as "ringing" (survives process death)
+     *  2. arm the watchdog, which re-checks every ~45 s even if everything below fails
+     *  3. start the audio service
+     *  4. if the audio service cannot start, post a notification that rings by itself
+     */
+    fun ring(context: Context) {
+        val app = context.applicationContext
+        RingState.start(app)
+        AlarmScheduler.scheduleWatchdog(app)
+        if (!startAudio(app)) {
+            try { AlarmNotifications.postFallback(app) } catch (_: Throwable) {}
+        }
+    }
+
+    fun startAudio(context: Context): Boolean = try {
+        val svc = Intent(context, AlarmAudioService::class.java)
+        if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(svc) else context.startService(svc)
+        true
+    } catch (t: Throwable) {
+        Diag.note(context, "error", "audio service refused to start: ${t.javaClass.simpleName}")
+        false
     }
 }
 
@@ -76,8 +146,19 @@ object AlarmNotifications {
             .setContentText("Tap to solve every question and stop the alarm")
             .setCategory(Notification.CATEGORY_ALARM)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)            // re-posting it from the watchdog must not pop up again
             .setContentIntent(open)            // tapping the heads-up opens the alarm screen
             .setFullScreenIntent(open, true)   // and it still auto-opens on the lock screen
+            .build()
+    }
+
+    /** Plainest possible notification, used only if build() ever throws. A foreground service needs one. */
+    fun buildMinimal(context: Context): Notification {
+        ensureChannel(context)
+        return Notification.Builder(context, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+            .setContentTitle("WAKE UP")
+            .setOngoing(true)
             .build()
     }
 
@@ -98,7 +179,7 @@ object AlarmNotifications {
         return n
     }
 
-    /** Fallback path: AlarmActivity starts the audio service when it opens. */
+    /** Fallback path: rings on its own (even if our process dies); AlarmActivity starts the audio service when opened. */
     fun postFallback(context: Context) {
         context.getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildFallback(context))
     }
