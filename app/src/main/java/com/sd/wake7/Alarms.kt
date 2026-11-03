@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.provider.Settings
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -199,6 +200,23 @@ object AlarmScheduler {
     private const val REQ_WATCHDOG = 80
     private const val MISS_WINDOW_MS = 30 * 60 * 1000L
 
+    // ---------------------------------------- "did the phone erase my alarms?" detector
+    private fun schedPrefs(c: Context) = c.getSharedPreferences("wake7", Context.MODE_PRIVATE)
+    private fun armedKey(id: Int) = "armed_boot_$id"
+
+    private fun bootCount(c: Context): Int = try {
+        Settings.Global.getInt(c.contentResolver, Settings.Global.BOOT_COUNT, 0)
+    } catch (_: Throwable) { 0 }
+
+    /** True if Android still knows the system alarm of this alarm (force-stop erases it). */
+    private fun isRegistered(context: Context, alarmId: Int): Boolean = try {
+        PendingIntent.getBroadcast(
+            context, REQ_BASE + alarmId,
+            Intent(context, AlarmReceiver::class.java),
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+        ) != null
+    } catch (_: Throwable) { true }
+
     const val EXTRA_ALARM_ID = "alarm_id"
     const val TEST_ALARM_ID = -2
     const val ACTION_HEARTBEAT = "com.sd.wake7.HEARTBEAT"
@@ -313,7 +331,10 @@ object AlarmScheduler {
     }
 
     /** Remove the system alarm for a deleted alarm. */
-    fun cancel(context: Context, alarmId: Int) = cancelRequest(context, REQ_BASE + alarmId)
+    fun cancel(context: Context, alarmId: Int) {
+        cancelRequest(context, REQ_BASE + alarmId)
+        try { schedPrefs(context).edit().remove(armedKey(alarmId)).apply() } catch (_: Throwable) {}
+    }
 
     /**
      * (Re)schedules every enabled alarm and cancels the disabled ones.
@@ -338,6 +359,13 @@ object AlarmScheduler {
             return true
         }
 
+        // Did the phone silently ERASE alarms we armed earlier (same boot)? Record it, then re-arm below.
+        val boot = bootCount(context)
+        val erased = active.count { schedPrefs(context).getInt(armedKey(it.id), -1) == boot && !isRegistered(context, it.id) }
+        if (erased > 0) {
+            Diag.note(context, "wiped", "phone ERASED $erased armed alarm(s) (app was force-stopped / cleaned by a battery manager) - re-armed now")
+        }
+
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         // What opens when the user taps the alarm icon in the status bar / clock UI.
         // It must NOT be the receiver, otherwise tapping the icon would trigger the alarm.
@@ -357,6 +385,7 @@ object AlarmScheduler {
             val at = nextTrigger(a, from)
             try {
                 am.setAlarmClock(AlarmManager.AlarmClockInfo(at, show), fire)
+                schedPrefs(context).edit().putInt(armedKey(a.id), boot).apply()
                 if (at < soonest) soonest = at
             } catch (_: SecurityException) {
                 ok = false
