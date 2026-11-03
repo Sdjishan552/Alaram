@@ -87,7 +87,11 @@ class AlarmGuardService : Service() {
         /** Start (or refresh) the guard if any alarm is on. Never throws. */
         fun ensure(context: Context) {
             try {
-                if (AlarmStore.all(context).none { it.enabled }) return
+                if (AlarmStore.all(context).none { it.enabled }) {
+                    // No alarm is on any more: remove the "armed" notification.
+                    context.stopService(Intent(context, AlarmGuardService::class.java))
+                    return
+                }
                 val i = Intent(context, AlarmGuardService::class.java)
                 if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(i) else context.startService(i)
             } catch (_: Throwable) {
