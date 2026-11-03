@@ -44,6 +44,7 @@ class AlarmReceiver : BroadcastReceiver() {
 
     /** Runs every few minutes all night: heal alarms, keep the guard alive, ring lost alarms. */
     private fun onHeartbeat(context: Context) {
+        Diag.note(context, "heartbeat", "background check ran")
         try { AlarmScheduler.schedule(context) } catch (_: Throwable) {}
         AlarmGuardService.ensure(context)
 
