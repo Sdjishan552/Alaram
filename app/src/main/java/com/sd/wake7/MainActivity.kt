@@ -301,6 +301,7 @@ class MainActivity : Activity() {
 
     private fun afterChange() {
         if (!AlarmScheduler.schedule(this)) requestExactAlarmAccess()
+        AlarmGuardService.ensure(this)
         refreshList()
     }
 
@@ -393,7 +394,9 @@ class MainActivity : Activity() {
         sb.append("Next alarm armed:\n").append(Diag.get(this, "scheduled")).append("\n\n")
         sb.append("Last alarm received by phone:\n").append(Diag.get(this, "received")).append("\n\n")
         sb.append("Last sound start:\n").append(Diag.get(this, "service")).append("\n\n")
-        sb.append("Last problem:\n").append(Diag.get(this, "error"))
+        sb.append("Last problem:\n").append(Diag.get(this, "error")).append("\n\n")
+        sb.append("Phone erased my alarms (last time):\n").append(Diag.get(this, "wiped")).append("\n\n")
+        sb.append("Background check last ran:\n").append(Diag.get(this, "heartbeat"))
         healthText.text = sb.toString()
     }
 
