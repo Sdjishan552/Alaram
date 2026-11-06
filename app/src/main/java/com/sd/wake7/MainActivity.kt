@@ -26,16 +26,43 @@ class MainActivity : Activity() {
     private var toneUri: Uri? = null
     private val pickTone = 1001
 
+    private var fatalText: String? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        buildUi()
-        // Re-register all saved alarms whenever the app is opened.
-        if (!AlarmScheduler.schedule(this)) requestExactAlarmAccess()
-        AlarmGuardService.ensure(this)
+        ProcessDiag.install(this)
+        try {
+            buildUi()
+            // Re-register all saved alarms whenever the app is opened.
+            if (!AlarmScheduler.schedule(this)) requestExactAlarmAccess()
+            AlarmGuardService.ensure(this)
+        } catch (t: Throwable) {
+            showFatal(t)
+        }
+    }
+
+    /** If anything fails while opening the app, show the error on screen (so it can be screenshotted) instead of closing. */
+    private fun showFatal(t: Throwable) {
+        if (fatalText == null) {
+            fatalText = android.util.Log.getStackTraceString(t).take(3000)
+            try { Diag.note(this, "crash", "${t.javaClass.simpleName}: ${t.message?.take(100)}") } catch (_: Throwable) {}
+        }
+        val tv = TextView(this).apply {
+            text = "Wake 7 hit an error. Please send a screenshot of this screen:\n\n${fatalText}"
+            textSize = 12f
+            setTextColor(Color.BLACK)
+            setTextIsSelectable(true)
+            setPadding(24.dp(this@MainActivity), 48.dp(this@MainActivity), 24.dp(this@MainActivity), 24.dp(this@MainActivity))
+        }
+        setContentView(ScrollView(this).apply { setBackgroundColor(Color.WHITE); addView(tv) })
     }
 
     override fun onResume() {
         super.onResume()
+        try { resumeWork() } catch (t: Throwable) { showFatal(t) }
+    }
+
+    private fun resumeWork() {
         // Coming back from the exact-alarm settings screen: try again silently.
         AlarmScheduler.schedule(this)
         AlarmGuardService.ensure(this)
@@ -599,4 +626,69 @@ class MainActivity : Activity() {
     }
 
     private fun toast(s: String) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show() }
+}
+
+
+/**
+ * Crash logger + "why did the phone stop this app" recorder. Lives here (not in a separate Application class)
+ * so the app can never fail to start because a file is missing.
+ */
+object ProcessDiag {
+    private var installed = false
+
+    fun install(context: Context) {
+        val ctx = context.applicationContext
+        if (!installed) {
+            installed = true
+            val previous = Thread.getDefaultUncaughtExceptionHandler()
+            Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+                try {
+                    val where = error.stackTrace.firstOrNull()?.toString() ?: "?"
+                    Diag.note(ctx, "crash", "${error.javaClass.simpleName}: ${error.message?.take(100)} at $where")
+                } catch (_: Throwable) {}
+                if (previous != null) previous.uncaughtException(thread, error)
+            }
+        }
+        recordExits(ctx)
+    }
+
+    private fun recordExits(ctx: Context) {
+        if (android.os.Build.VERSION.SDK_INT < 30) return
+        try {
+            val am = ctx.getSystemService(ActivityManager::class.java)
+            val list = am.getHistoricalProcessExitReasons(ctx.packageName, 0, 8)
+            val p = ctx.getSharedPreferences("wake7", Context.MODE_PRIVATE)
+            val lastTs = p.getLong("exits_last_ts", 0L)
+            val fresh = list.filter { it.timestamp > lastTs }.sortedBy { it.timestamp }
+            if (fresh.isEmpty()) return
+            val newLines = fresh.map {
+                val desc = it.description?.take(80)
+                Diag.time(it.timestamp) + "  -  " + reasonName(it.reason) + (if (desc.isNullOrBlank()) "" else "  [$desc]")
+            }
+            val old = p.getString("diag_exits", null)?.split("\n")?.filter { it.isNotBlank() } ?: emptyList()
+            val merged = (newLines.reversed() + old).take(8)   // newest first
+            p.edit()
+                .putString("diag_exits", merged.joinToString("\n"))
+                .putLong("exits_last_ts", fresh.maxOf { it.timestamp })
+                .commit()
+        } catch (_: Throwable) {}
+    }
+
+    private fun reasonName(r: Int): String = when (r) {
+        10 -> "FORCE-STOPPED (user or phone cleaner)"
+        3 -> "killed: low memory"
+        4, 5 -> "app CRASHED"
+        6 -> "app not responding (ANR)"
+        9 -> "killed: too much resource use"
+        8 -> "permission was changed"
+        13 -> "killed by the phone (other)"
+        2 -> "killed by signal"
+        1 -> "app exited by itself"
+        12 -> "dependency died"
+        7 -> "start-up failure"
+        14 -> "FROZEN by the phone (app freezer)"
+        15 -> "app state changed"
+        16 -> "app was updated"
+        else -> "reason code $r"
+    }
 }
