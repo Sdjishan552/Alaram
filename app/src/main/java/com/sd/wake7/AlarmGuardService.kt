@@ -82,7 +82,7 @@ class AlarmGuardService : Service() {
 
     companion object {
         private const val CHANNEL_ID = "wake7_guard_v1"
-        private const val NOTIFICATION_ID = 10
+        const val NOTIFICATION_ID = 10
 
         /** Start (or refresh) the guard if any alarm is on. Never throws. */
         fun ensure(context: Context) {
