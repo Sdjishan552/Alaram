@@ -77,6 +77,53 @@ class MainActivity : Activity() {
     // allowed to "auto-start" / run in the background. Open the vendor screen if we know it,
     // otherwise the standard App info page.
     private fun openAutostartSettings() {
+        AlertDialog.Builder(this)
+            .setTitle("Steps for your phone (${android.os.Build.MANUFACTURER})")
+            .setMessage(phoneSteps())
+            .setPositiveButton("Open settings") { _, _ -> openVendorScreen() }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun phoneSteps(): String {
+        val m = android.os.Build.MANUFACTURER.lowercase(Locale.ROOT)
+        val specific = when {
+            m.contains("xiaomi") || m.contains("redmi") || m.contains("poco") ->
+                "XIAOMI / REDMI / POCO\n" +
+                "1. Settings > Apps > Manage apps > Wake 7 Alarm > Autostart: ON\n" +
+                "2. Same page > Battery saver: No restrictions\n" +
+                "3. Same page > Other permissions: turn ON Display pop-up windows while running in background, and Show on lock screen"
+            m.contains("oppo") || m.contains("realme") || m.contains("oneplus") ->
+                "OPPO / REALME / ONEPLUS\n" +
+                "1. Settings > Apps > Auto launch (or App management) > Wake 7 Alarm: Allow auto launch ON\n" +
+                "2. Settings > Apps > App management > Wake 7 Alarm > Battery usage: Allow background activity ON, Allow auto launch ON\n" +
+                "3. Settings > Battery > turn OFF any Sleep standby optimization / Optimise in sleep for this app"
+            m.contains("vivo") || m.contains("iqoo") ->
+                "VIVO / IQOO\n" +
+                "1. Settings > Battery > Background power consumption management > Wake 7 Alarm > Allow high background power consumption\n" +
+                "2. Settings > Apps > Autostart (or i Manager > App manager > Autostart) > Wake 7 Alarm: ON"
+            m.contains("samsung") ->
+                "SAMSUNG\n" +
+                "1. Settings > Battery > Background usage limits > Never sleeping apps > add Wake 7 Alarm\n" +
+                "2. Same page: turn OFF Put unused apps to sleep, and remove Wake 7 Alarm from Sleeping apps / Deep sleeping apps"
+            m.contains("huawei") || m.contains("honor") ->
+                "HUAWEI / HONOR\n" +
+                "Settings > Battery > App launch > Wake 7 Alarm > Manage manually: turn ON Auto-launch, Secondary launch and Run in background"
+            m.contains("tecno") || m.contains("infinix") || m.contains("itel") ->
+                "TECNO / INFINIX / ITEL\n" +
+                "1. Settings > Apps > Wake 7 Alarm > Autostart: ON (or Phone Master > Auto-start management)\n" +
+                "2. Settings > Battery > App battery management > Wake 7 Alarm: No restrictions"
+            else ->
+                "ANDROID\n" +
+                "1. Settings > Apps > Wake 7 Alarm > Battery > Unrestricted\n" +
+                "2. Same page: turn OFF Pause app activity if unused"
+        }
+        return specific +
+            "\n\nON EVERY PHONE: open Recents, find Wake 7 Alarm and LOCK it (long-press the card, or tap its icon, then Lock / Keep open). " +
+            "Never swipe it away at night."
+    }
+
+    private fun openVendorScreen() {
         val screens = listOf(
             "com.miui.securitycenter" to "com.miui.permcenter.autostart.AutoStartManagementActivity",
             "com.coloros.safecenter" to "com.coloros.safecenter.permission.startup.StartupAppListActivity",
@@ -90,7 +137,6 @@ class MainActivity : Activity() {
             "com.oneplus.security" to "com.oneplus.security.chainlaunch.view.ChainLaunchAppListActivity",
             "com.transsion.phonemaster" to "com.cyin.himgr.autostart.AutoStartActivity"
         )
-        toast("Turn ON Auto-start / Allow background activity, and set Battery to No restrictions")
         for ((pkg, cls) in screens) {
             try {
                 startActivity(Intent().setComponent(ComponentName(pkg, cls)))
@@ -396,7 +442,10 @@ class MainActivity : Activity() {
         sb.append("Last sound start:\n").append(Diag.get(this, "service")).append("\n\n")
         sb.append("Last problem:\n").append(Diag.get(this, "error")).append("\n\n")
         sb.append("Phone erased my alarms (last time):\n").append(Diag.get(this, "wiped")).append("\n\n")
-        sb.append("Background check last ran:\n").append(Diag.get(this, "heartbeat"))
+        sb.append("Background check last ran:\n").append(Diag.get(this, "heartbeat")).append("\n\n")
+        sb.append("Why the phone stopped this app (newest first):\n").append(Diag.get(this, "exits")).append("\n\n")
+        sb.append("App crash (if any):\n").append(Diag.get(this, "crash")).append("\n\n")
+        sb.append("Phone: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}, Android ${android.os.Build.VERSION.RELEASE}")
         healthText.text = sb.toString()
     }
 
