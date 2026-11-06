@@ -14,13 +14,19 @@ import android.os.IBinder
  */
 class AlarmGuardService : Service() {
 
+    private var isForeground = false
+
     override fun onCreate() {
         super.onCreate()
-        goForeground()
+        // If Android refuses to make us a foreground service, stop quietly instead of crashing the app.
+        if (!goForeground()) stopSelf()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        goForeground()
+        if (!goForeground() && !isForeground) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         if (AlarmStore.all(this).none { it.enabled }) {
             try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Throwable) {}
             stopSelf()
@@ -39,17 +45,24 @@ class AlarmGuardService : Service() {
         super.onTaskRemoved(rootIntent)
     }
 
-    private fun goForeground() {
+    private fun goForeground(): Boolean {
+        val n = try { buildNotification() } catch (t: Throwable) {
+            Diag.note(this, "error", "guard notification failed: ${t.javaClass.simpleName}")
+            return false
+        }
         try {
-            val n = buildNotification()
             if (Build.VERSION.SDK_INT >= 34) {
                 startForeground(NOTIFICATION_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
             } else {
                 startForeground(NOTIFICATION_ID, n)
             }
+            isForeground = true
+            return true
         } catch (t: Throwable) {
             Diag.note(this, "error", "guard could not go foreground: ${t.javaClass.simpleName}")
         }
+        // Second try without an explicit type (uses the type from the manifest).
+        return try { startForeground(NOTIFICATION_ID, n); isForeground = true; true } catch (_: Throwable) { false }
     }
 
     private fun buildNotification(): Notification {
