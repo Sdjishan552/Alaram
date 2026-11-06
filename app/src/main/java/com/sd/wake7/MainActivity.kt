@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
+import android.provider.AlarmClock
 import android.provider.Settings
 import android.text.format.DateFormat
 import android.view.Gravity
@@ -21,6 +22,7 @@ class MainActivity : Activity() {
     private lateinit var listBox: LinearLayout
     private lateinit var toneText: TextView
     private lateinit var healthText: TextView
+    private lateinit var safeText: TextView
     private var toneUri: Uri? = null
     private val pickTone = 1001
 
@@ -54,6 +56,8 @@ class MainActivity : Activity() {
         }
         refreshList()
         refreshHealth()
+        // The overnight-protection service needs a moment to start; re-check shortly.
+        timeText.postDelayed({ refreshHealth() }, 2000)
     }
 
     private fun requestExactAlarmAccess() {
@@ -176,6 +180,20 @@ class MainActivity : Activity() {
             setTextColor(textSecondary)
         }, matchWrap(this, topDp = 4, bottomDp = 28))
 
+        // ---- Safety banner: "is it safe to sleep?" ----
+        safeText = TextView(this).apply {
+            textSize = 14f
+            setTypeface(typeface, Typeface.BOLD)
+            gravity = Gravity.CENTER
+            setLineSpacing(4f, 1f)
+        }
+        val safeCard = buildCard(this, 18).apply {
+            gravity = Gravity.CENTER
+            setPadding(18.dp(this@MainActivity), 14.dp(this@MainActivity), 18.dp(this@MainActivity), 14.dp(this@MainActivity))
+        }
+        safeCard.addView(safeText, matchWrap(this))
+        root.addView(safeCard, matchWrap(this, bottomDp = 20))
+
         // ---- Clock card ----
         val clockCard = buildCard(this, 24).apply {
             gravity = Gravity.CENTER
@@ -231,6 +249,12 @@ class MainActivity : Activity() {
             }
         }
         root.addView(realTest, matchHeight(this, 50, bottomDp = 14))
+
+        // Extra layer that survives even if the phone kills Wake 7: a one-time alarm in the system Clock app.
+        val safety = buildSecondaryButton(this, "SAFETY NET: BACKUP ALARM IN CLOCK APP").apply {
+            setOnClickListener { setClockSafetyNet() }
+        }
+        root.addView(safety, matchHeight(this, 50, bottomDp = 14))
 
         val battery = buildSecondaryButton(this, "ALLOW BACKGROUND RUNNING (IMPORTANT)").apply {
             setOnClickListener { requestBatteryUnrestricted() }
@@ -422,6 +446,7 @@ class MainActivity : Activity() {
 
     private fun refreshHealth() {
         if (!::healthText.isInitialized) return
+        refreshSafety()
         val sb = StringBuilder()
         fun line(ok: Boolean, text: String) { sb.append(if (ok) "✔  " else "✘  ").append(text).append('\n') }
         try {
@@ -447,6 +472,71 @@ class MainActivity : Activity() {
         sb.append("App crash (if any):\n").append(Diag.get(this, "crash")).append("\n\n")
         sb.append("Phone: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}, Android ${android.os.Build.VERSION.RELEASE}")
         healthText.text = sb.toString()
+    }
+
+    private fun refreshSafety() {
+        if (!::safeText.isInitialized) return
+        val anyOn = AlarmStore.all(this).any { it.enabled }
+        val problems = ArrayList<String>()
+        try {
+            val nm = getSystemService(NotificationManager::class.java)
+            if (!nm.areNotificationsEnabled()) problems.add("• Notifications are OFF")
+            val pm = getSystemService(android.os.PowerManager::class.java)
+            if (!pm.isIgnoringBatteryOptimizations(packageName)) problems.add("• Battery is restricted: tap ALLOW BACKGROUND RUNNING")
+            if (android.os.Build.VERSION.SDK_INT >= 31 && !getSystemService(AlarmManager::class.java).canScheduleExactAlarms()) problems.add("• Exact alarms are not allowed")
+            if (android.os.Build.VERSION.SDK_INT >= 34 && !nm.canUseFullScreenIntent()) problems.add("• Full-screen alarm is not allowed")
+            if (anyOn && nm.activeNotifications.none { it.id == AlarmGuardService.NOTIFICATION_ID }) {
+                problems.add("• Overnight protection is NOT running (the phone stopped it). Keep this app open a few seconds, then do the AUTO-START steps and lock the app in Recents")
+            }
+        } catch (_: Exception) {}
+
+        when {
+            !anyOn -> {
+                safeText.text = "No alarm is on"
+                safeText.setTextColor(Color.parseColor(Palette.TEXT_SECONDARY))
+            }
+            problems.isEmpty() -> {
+                safeText.text = "✔ ALARM ARMED AND PROTECTED\nDo not swipe this app away. Keep it locked in Recents."
+                safeText.setTextColor(Color.parseColor("#2E7D32"))
+            }
+            else -> {
+                safeText.text = "✘ NOT SAFE TO SLEEP YET\n" + problems.joinToString("\n")
+                safeText.setTextColor(Color.parseColor(Palette.ACCENT))
+            }
+        }
+    }
+
+    private fun setClockSafetyNet() {
+        val next = AlarmStore.all(this).filter { it.enabled }.minByOrNull { AlarmScheduler.nextTrigger(it) }
+        if (next == null) { toast("Turn an alarm on first"); return }
+        val backup = Calendar.getInstance().apply { timeInMillis = AlarmScheduler.nextTrigger(next) + 3 * 60_000L }
+        val h = backup.get(Calendar.HOUR_OF_DAY)
+        val m = backup.get(Calendar.MINUTE)
+        val label = AlarmStore.format(h, m)
+        AlertDialog.Builder(this)
+            .setTitle("Safety-net alarm")
+            .setMessage(
+                "This creates a ONE-TIME alarm in your phone's Clock app for $label (3 minutes after your Wake 7 alarm). " +
+                "The Clock app is a system app, so it still rings even if the phone kills Wake 7.\n\n" +
+                "If Wake 7 works, you will hear the Clock alarm once more: just dismiss it. " +
+                "Repeat this on any night you want the extra protection."
+            )
+            .setPositiveButton("Create it") { _, _ ->
+                try {
+                    startActivity(
+                        Intent(AlarmClock.ACTION_SET_ALARM)
+                            .putExtra(AlarmClock.EXTRA_HOUR, h)
+                            .putExtra(AlarmClock.EXTRA_MINUTES, m)
+                            .putExtra(AlarmClock.EXTRA_MESSAGE, "Wake 7 safety net")
+                            .putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                    )
+                    toast("Safety-net alarm set for $label in the Clock app")
+                } catch (_: Exception) {
+                    toast("Could not reach the Clock app. Set a normal alarm for $label yourself.")
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun updateNextText() {
